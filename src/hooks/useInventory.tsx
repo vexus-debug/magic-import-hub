@@ -63,7 +63,7 @@ export function useUpdateInventoryStock() {
 export function useUpdateInventoryItem() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...updates }: { id: string; name?: string; category?: string; unit?: string; min_stock?: number; supplier?: string | null }) => {
+    mutationFn: async ({ id, ...updates }: { id: string; name?: string; category?: string; unit?: string; min_stock?: number; supplier?: string | null; unit_cost?: number | null; expiry_date?: string | null; quantity?: number }) => {
       const { error } = await (supabase as any).from("inventory").update(updates).eq("id", id);
       if (error) throw error;
     },
