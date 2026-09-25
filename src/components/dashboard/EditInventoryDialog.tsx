@@ -17,7 +17,7 @@ interface EditInventoryDialogProps {
 
 export function EditInventoryDialog({ item, open, onOpenChange }: EditInventoryDialogProps) {
   const updateItem = useUpdateInventoryItem();
-  const [form, setForm] = useState({ name: "", category: "General", unit: "pcs", min_stock: "5", supplier: "" });
+  const [form, setForm] = useState({ name: "", category: "General", unit: "pcs", min_stock: "5", supplier: "", unit_cost: "", expiry_date: "" });
 
   useEffect(() => {
     if (item) {
@@ -27,6 +27,8 @@ export function EditInventoryDialog({ item, open, onOpenChange }: EditInventoryD
         unit: item.unit,
         min_stock: String(item.min_stock),
         supplier: item.supplier || "",
+        unit_cost: item.unit_cost != null ? String(item.unit_cost) : "",
+        expiry_date: item.expiry_date || "",
       });
     }
   }, [item]);
@@ -36,17 +38,25 @@ export function EditInventoryDialog({ item, open, onOpenChange }: EditInventoryD
       toast({ title: "Name is required", variant: "destructive" });
       return;
     }
-    await updateItem.mutateAsync({
-      id: item.id,
-      name: form.name,
-      category: form.category,
-      unit: form.unit,
-      min_stock: parseInt(form.min_stock) || 5,
-      supplier: form.supplier,
-    });
-    toast({ title: "Item updated" });
-    onOpenChange(false);
+    try {
+      await updateItem.mutateAsync({
+        id: item.id,
+        name: form.name.trim(),
+        category: form.category,
+        unit: form.unit,
+        min_stock: parseInt(form.min_stock) || 0,
+        supplier: form.supplier || null,
+        unit_cost: form.unit_cost === "" ? null : parseFloat(form.unit_cost),
+        expiry_date: form.expiry_date || null,
+      });
+      toast({ title: "Item updated" });
+      onOpenChange(false);
+    } catch (err: any) {
+      toast({ title: "Could not save", description: err.message, variant: "destructive" });
+    }
   };
+
+  const allCats = item && !categories.includes(item.category) ? [...categories, item.category] : categories;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -63,7 +73,7 @@ export function EditInventoryDialog({ item, open, onOpenChange }: EditInventoryD
               <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {categories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  {allCats.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -78,8 +88,18 @@ export function EditInventoryDialog({ item, open, onOpenChange }: EditInventoryD
               <Input type="number" value={form.min_stock} onChange={(e) => setForm({ ...form, min_stock: e.target.value })} />
             </div>
             <div className="space-y-1">
+              <Label className="text-xs">Unit Cost (₦)</Label>
+              <Input type="number" value={form.unit_cost} onChange={(e) => setForm({ ...form, unit_cost: e.target.value })} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
               <Label className="text-xs">Supplier</Label>
               <Input value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Expiry Date</Label>
+              <Input type="date" value={form.expiry_date} onChange={(e) => setForm({ ...form, expiry_date: e.target.value })} />
             </div>
           </div>
         </div>
