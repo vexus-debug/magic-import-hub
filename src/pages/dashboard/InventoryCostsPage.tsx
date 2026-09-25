@@ -210,7 +210,7 @@ export default function InventoryCostsPage() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label className="text-xs">Item *</Label>
-              <Select value={form.inventory_id} onValueChange={(v) => setForm((f) => ({ ...f, inventory_id: v }))}>
+              <Select value={form.inventory_id} onValueChange={(v) => { const it = inventory.find((i) => i.id === v); setForm((f) => ({ ...f, inventory_id: v, unit_cost: f.unit_cost || (it?.unit_cost != null ? String(it.unit_cost) : "") })); }}>
                 <SelectTrigger><SelectValue placeholder="Select item" /></SelectTrigger>
                 <SelectContent>
                   {inventory.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}
