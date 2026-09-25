@@ -1,13 +1,15 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { useCreateInventoryTransaction } from "@/hooks/useInventoryCosts";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { AlertTriangle, Plus, Pencil, Trash2, Package, Minus } from "lucide-react";
+import { AlertTriangle, Plus, Pencil, Trash2, Package, Minus, Search, Download } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
-import { useInventory, useAddInventoryItem, useUpdateInventoryStock, useDeleteInventoryItem } from "@/hooks/useInventory";
+import { useInventory, useAddInventoryItem, useDeleteInventoryItem } from "@/hooks/useInventory";
 import { EditInventoryDialog } from "@/components/dashboard/EditInventoryDialog";
 import { useOrg } from "@/hooks/useOrg";
 import { getClinicTerms } from "@/config/clinicTerminology";
@@ -23,12 +25,20 @@ const categories = ["Consumables", "Materials", "Medication", "Instruments", "Ge
 export default function InventoryPage() {
   const { data: inventory = [], isLoading } = useInventory();
   const addItem = useAddInventoryItem();
-  const updateStock = useUpdateInventoryStock();
   const deleteItem = useDeleteInventoryItem();
   const { currentOrg } = useOrg();
   const orgRole = currentOrg?.role || "";
-  const isAdmin = orgRole === "owner" || orgRole === "admin";
-  const canManageStock = ["owner", "admin", "receptionist"].includes(orgRole);
+  const canManageStock = ["owner", "admin", "receptionist", "dentist", "assistant", "hygienist"].includes(orgRole);
+  const canDelete = ["owner", "admin", "receptionist"].includes(orgRole);
+  const createTx = useCreateInventoryTransaction();
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "low" | "out" | "expiring">("all");
+  const [catFilter, setCatFilter] = useState("all");
+  const [deleteTarget, setDeleteTarget] = useState<InventoryItem | null>(null);
+  const [restockCost, setRestockCost] = useState("");
+  const [reduceReason, setReduceReason] = useState("usage");
+  const [newUnitCost, setNewUnitCost] = useState("");
+  const [newExpiry, setNewExpiry] = useState("");
 
   const [addOpen, setAddOpen] = useState(false);
   const [restockId, setRestockId] = useState<string | null>(null);
@@ -45,6 +55,28 @@ export default function InventoryPage() {
   const [newSupplier, setNewSupplier] = useState("");
 
   const lowStock = inventory.filter((i) => i.quantity <= i.min_stock);
+  const daysToExpiry = (d?: string | null) => d ? Math.ceil((new Date(d).getTime() - Date.now()) / 86400000) : null;
+  const allCategories = Array.from(new Set([...categories, ...inventory.map((i) => i.category)]));
+  const visible = useMemo(() => inventory.filter((i) => {
+    const t = search.toLowerCase();
+    if (t && !`${i.name} ${i.supplier || ""} ${i.category}`.toLowerCase().includes(t)) return false;
+    if (catFilter !== "all" && i.category !== catFilter) return false;
+    if (filter === "low" && i.quantity > i.min_stock) return false;
+    if (filter === "out" && i.quantity > 0) return false;
+    if (filter === "expiring") { const d = daysToExpiry(i.expiry_date); if (d === null || d > 30) return false; }
+    return true;
+  }), [inventory, search, filter, catFilter]);
+  const stockValue = inventory.reduce((s, i) => s + Number(i.quantity) * Number(i.unit_cost || 0), 0);
+
+  const exportCsv = () => {
+    const rows = [["Name", "Category", "Quantity", "Unit", "Min Stock", "Unit Cost", "Supplier", "Expiry", "Last Restocked"],
+      ...visible.map((i) => [i.name, i.category, i.quantity, i.unit, i.min_stock, i.unit_cost ?? "", i.supplier ?? "", i.expiry_date ?? "", i.last_restocked ?? ""])];
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = `inventory-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+  };
 
   const handleAddItem = async () => {
     if (!newName.trim()) {
@@ -59,11 +91,13 @@ export default function InventoryPage() {
         min_stock: parseInt(newMinStock) || 5,
         unit: newUnit,
         supplier: newSupplier,
+        unit_cost: newUnitCost === "" ? null : parseFloat(newUnitCost),
+        expiry_date: newExpiry || null,
         last_restocked: new Date().toISOString().split("T")[0],
       });
       toast({ title: "Item added" });
       setAddOpen(false);
-      setNewName(""); setNewQuantity(""); setNewMinStock(""); setNewSupplier("");
+      setNewName(""); setNewQuantity(""); setNewMinStock(""); setNewSupplier(""); setNewUnitCost(""); setNewExpiry("");
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     }
@@ -74,8 +108,7 @@ export default function InventoryPage() {
     const item = inventory.find((i) => i.id === restockId);
     if (!item) return;
     try {
-      await updateStock.mutateAsync({ id: restockId, quantity: item.quantity + parseInt(restockQty) });
-      toast({ title: "Stock updated" });
+      await createTx.mutateAsync({ inventory_id: restockId, transaction_type: "purchase", quantity: parseInt(restockQty), unit_cost: restockCost === "" ? Number(item.unit_cost || 0) : parseFloat(restockCost), reference: "Restock" });
       setRestockId(null);
       setRestockQty("");
     } catch (err: any) {
@@ -93,8 +126,7 @@ export default function InventoryPage() {
       return;
     }
     try {
-      await updateStock.mutateAsync({ id: reduceId, quantity: item.quantity - qty });
-      toast({ title: "Stock reduced", description: `Used ${qty} ${item.unit} of ${item.name}` });
+      await createTx.mutateAsync({ inventory_id: reduceId, transaction_type: reduceReason === "usage" ? "usage" : "adjustment", quantity: qty, unit_cost: Number(item.unit_cost || 0), reference: reduceReason === "usage" ? "Used" : reduceReason });
       setReduceId(null);
       setReduceQty("");
     } catch (err: any) {
@@ -102,9 +134,11 @@ export default function InventoryPage() {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await deleteItem.mutateAsync(id);
+      await deleteItem.mutateAsync(deleteTarget.id);
+      setDeleteTarget(null);
       toast({ title: "Item deleted" });
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -157,6 +191,9 @@ export default function InventoryPage() {
           </Badge>
         ) : undefined}
       >
+        <Button size="sm" variant="outline" onClick={exportCsv} disabled={!inventory.length}>
+          <Download className="mr-2 h-4 w-4" /> Export
+        </Button>
         <Button data-tour="inventory-add" size="sm" className="bg-secondary hover:bg-secondary/90 shadow-lg shadow-secondary/20" onClick={() => setAddOpen(true)}>
           <Plus className="mr-2 h-4 w-4" /> Add Item
         </Button>
@@ -178,6 +215,31 @@ export default function InventoryPage() {
         </motion.div>
       )}
 
+      <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
+        {[["Items", inventory.length], ["Low stock", lowStock.length], ["Out of stock", inventory.filter((i) => i.quantity <= 0).length], ["Stock value", `₦${stockValue.toLocaleString()}`]].map(([l, v]) => (
+          <Card key={l as string} className="glass-card"><CardContent className="p-4"><p className="text-xs text-muted-foreground">{l}</p><p className="text-xl font-semibold">{v}</p></CardContent></Card>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input className="pl-8" placeholder="Search name, supplier, category…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <Select value={catFilter} onValueChange={setCatFilter}>
+          <SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All categories</SelectItem>
+            {allCategories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <div className="flex flex-wrap gap-1">
+          {([["all", "All"], ["low", "Low"], ["out", "Out"], ["expiring", "Expiring"]] as const).map(([k, l]) => (
+            <Button key={k} size="sm" variant={filter === k ? "default" : "outline"} onClick={() => setFilter(k)}>{l}</Button>
+          ))}
+        </div>
+      </div>
+
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
         <Card data-tour="inventory-table" className="glass-card overflow-hidden">
           <CardContent className="p-0">
@@ -185,6 +247,8 @@ export default function InventoryPage() {
               <TableSkeleton columns={7} rows={6} />
             ) : inventory.length === 0 ? (
               <EmptyState icon={Package} title="No inventory items" description="Add items to start tracking your inventory." actionLabel="Add Item" onAction={() => setAddOpen(true)} />
+            ) : visible.length === 0 ? (
+              <p className="py-12 text-center text-sm text-muted-foreground">No items match your search or filters.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -200,8 +264,10 @@ export default function InventoryPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {inventory.map((item, i) => {
+                    {visible.map((item, i) => {
                       const isLow = item.quantity <= item.min_stock;
+                      const isOut = item.quantity <= 0;
+                      const exp = daysToExpiry(item.expiry_date);
                       return (
                         <motion.tr
                           key={item.id}
@@ -210,7 +276,14 @@ export default function InventoryPage() {
                           animate={{ opacity: 1, x: 0 }}
                           transition={{ delay: i * 0.02 }}
                         >
-                          <td className="py-3 px-4 font-medium group-hover:text-secondary transition-colors">{item.name}</td>
+                          <td className="py-3 px-4 font-medium group-hover:text-secondary transition-colors">
+                            {item.name}
+                            {exp !== null && exp <= 30 && (
+                              <span className={`ml-2 text-[10px] rounded px-1.5 py-0.5 ${exp < 0 ? "bg-destructive/15 text-destructive" : "bg-amber-500/10 text-amber-700"}`}>
+                                {exp < 0 ? "Expired" : `Expires in ${exp}d`}
+                              </span>
+                            )}
+                          </td>
                           <td className="py-3 px-4 text-muted-foreground">{item.category}</td>
                           <td className="py-3 px-4 font-semibold">{item.quantity} {item.unit}</td>
                           <td className="py-3 px-4 hidden md:table-cell text-muted-foreground">{item.min_stock}</td>
@@ -218,26 +291,26 @@ export default function InventoryPage() {
                           <td className="py-3 px-4">
                             <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${isLow ? "bg-red-500/10 text-red-700 dark:text-red-400" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"}`}>
                               <span className={`h-1.5 w-1.5 rounded-full ${isLow ? "bg-red-500" : "bg-emerald-500"}`} />
-                              {isLow ? "Low Stock" : "In Stock"}
+                              {isOut ? "Out of Stock" : isLow ? "Low Stock" : "In Stock"}
                             </span>
                           </td>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-1">
                               {canManageStock && (
                                 <>
-                                  <Button data-tour="inventory-restock" variant="outline" size="sm" className="h-7 text-xs border-border/50 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => { setRestockId(item.id); setRestockQty(""); }}>
+                                  <Button data-tour="inventory-restock" variant="outline" size="sm" className="h-7 text-xs border-border/50" onClick={() => { setRestockId(item.id); setRestockQty(""); setRestockCost(item.unit_cost != null ? String(item.unit_cost) : ""); }}>
                                     Restock
                                   </Button>
-                                  <Button data-tour="inventory-use" variant="outline" size="sm" className="h-7 text-xs border-destructive/30 text-destructive opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => { setReduceId(item.id); setReduceQty(""); }}>
+                                  <Button data-tour="inventory-use" variant="outline" size="sm" className="h-7 text-xs border-destructive/30 text-destructive" onClick={() => { setReduceId(item.id); setReduceQty(""); setReduceReason("usage"); }}>
                                     <Minus className="mr-1 h-3 w-3" /> Use
                                   </Button>
                                 </>
                               )}
-                              <Button data-tour="inventory-edit" variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => setEditItem(item)}>
-                                <Pencil className="h-3.5 w-3.5" />
+                              <Button data-tour="inventory-edit" variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditItem(item)}>
+                                <Pencil className="h-3.5 w-3.5" /><span className="sr-only">Edit</span>
                               </Button>
-                              {isAdmin && (
-                                <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => handleDelete(item.id)}>
+                              {canDelete && (
+                                <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500 hover:text-red-600" aria-label="Delete item" onClick={() => setDeleteTarget(item)}>
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </Button>
                               )}
@@ -288,6 +361,16 @@ export default function InventoryPage() {
                 <Input type="number" value={newMinStock} onChange={(e) => setNewMinStock(e.target.value)} placeholder="5" className="bg-muted/30" />
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Unit Cost (₦)</Label>
+                <Input type="number" value={newUnitCost} onChange={(e) => setNewUnitCost(e.target.value)} placeholder="0" className="bg-muted/30" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Expiry Date</Label>
+                <Input type="date" value={newExpiry} onChange={(e) => setNewExpiry(e.target.value)} className="bg-muted/30" />
+              </div>
+            </div>
             <div className="space-y-1">
               <Label className="text-xs">Supplier</Label>
               <Input value={newSupplier} onChange={(e) => setNewSupplier(e.target.value)} placeholder="Supplier name" className="bg-muted/30" />
@@ -310,10 +393,15 @@ export default function InventoryPage() {
             <Label className="text-xs">Quantity to Add</Label>
             <Input type="number" min={1} value={restockQty} onChange={(e) => setRestockQty(e.target.value)} placeholder="Enter quantity" className="bg-muted/30" />
           </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Cost per unit (₦)</Label>
+            <Input type="number" value={restockCost} onChange={(e) => setRestockCost(e.target.value)} placeholder="0" className="bg-muted/30" />
+            <p className="text-[11px] text-muted-foreground">Recorded in Inventory Costs as a purchase.</p>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRestockId(null)}>Cancel</Button>
-            <Button onClick={handleRestock} className="bg-secondary hover:bg-secondary/90" disabled={updateStock.isPending}>
-              {updateStock.isPending ? "Updating..." : "Update Stock"}
+            <Button onClick={handleRestock} className="bg-secondary hover:bg-secondary/90" disabled={createTx.isPending}>
+              {createTx.isPending ? "Updating..." : "Update Stock"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -323,19 +411,44 @@ export default function InventoryPage() {
       <Dialog open={!!reduceId} onOpenChange={(open) => !open && setReduceId(null)}>
         <DialogContent className="backdrop-blur-xl bg-card/95">
           <DialogHeader><DialogTitle>Use Stock</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground">Reduce inventory quantity for items used during procedures.</p>
+          <p className="text-sm text-muted-foreground">Reduce stock for items used, damaged, expired or lost.</p>
+          <div className="space-y-1">
+            <Label className="text-xs">Reason</Label>
+            <Select value={reduceReason} onValueChange={setReduceReason}>
+              <SelectTrigger className="bg-muted/30"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="usage">Used in procedure</SelectItem>
+                <SelectItem value="Damaged">Damaged</SelectItem>
+                <SelectItem value="Expired">Expired</SelectItem>
+                <SelectItem value="Stock count correction">Stock count correction</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <div className="space-y-1">
             <Label className="text-xs">Quantity Used</Label>
             <Input type="number" min={1} value={reduceQty} onChange={(e) => setReduceQty(e.target.value)} placeholder="Enter quantity used" className="bg-muted/30" />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setReduceId(null)}>Cancel</Button>
-            <Button onClick={handleReduce} variant="destructive" disabled={updateStock.isPending}>
-              {updateStock.isPending ? "Reducing..." : "Reduce Stock"}
+            <Button onClick={handleReduce} variant="destructive" disabled={createTx.isPending}>
+              {createTx.isPending ? "Reducing..." : "Reduce Stock"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deleteTarget?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>This removes the item from your inventory. This cannot be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <EditInventoryDialog item={editItem} open={!!editItem} onOpenChange={(o) => !o && setEditItem(null)} />
     </div>

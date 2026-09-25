@@ -8,10 +8,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { AnimatedCounter } from "@/components/dashboard/AnimatedCounter";
-import { useInventoryCostAnalytics, useInventoryTransactions, useCreateInventoryTransaction } from "@/hooks/useInventoryCosts";
+import { useInventoryCostAnalytics, useInventoryTransactions, useCreateInventoryTransaction, useDeleteInventoryTransaction } from "@/hooks/useInventoryCosts";
 import { useInventory } from "@/hooks/useInventory";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
-import { Package, Plus, DollarSign, TrendingDown, Warehouse } from "lucide-react";
+import { Package, Plus, DollarSign, TrendingDown, Warehouse, Trash2, Download } from "lucide-react";
 import { motion } from "framer-motion";
 
 const COLORS = ["hsl(174, 60%, 40%)", "hsl(220, 60%, 20%)", "hsl(174, 50%, 50%)", "hsl(220, 50%, 30%)", "hsl(165, 40%, 50%)", "hsl(210, 30%, 60%)"];
@@ -44,7 +44,26 @@ export default function InventoryCostsPage() {
   const { data: transactions = [] } = useInventoryTransactions();
   const { data: inventory = [] } = useInventory();
   const createTx = useCreateInventoryTransaction();
+  const deleteTx = useDeleteInventoryTransaction();
   const [txOpen, setTxOpen] = useState(false);
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [range, setRange] = useState("all");
+  const [txSearch, setTxSearch] = useState("");
+  const filteredTx = transactions.filter((tx) => {
+    if (typeFilter !== "all" && tx.transaction_type !== typeFilter) return false;
+    if (range !== "all" && Date.now() - new Date(tx.created_at).getTime() > Number(range) * 86400000) return false;
+    if (txSearch && !`${tx.item_name} ${tx.reference || ""} ${tx.notes || ""}`.toLowerCase().includes(txSearch.toLowerCase())) return false;
+    return true;
+  });
+  const filteredSpend = filteredTx.filter((t) => t.transaction_type === "purchase").reduce((s, t) => s + Number(t.total_cost), 0);
+  const exportTx = () => {
+    const rows = [["Date", "Item", "Type", "Quantity", "Unit Cost", "Total", "Reference", "Notes"], ...filteredTx.map((t) => [t.created_at.split("T")[0], t.item_name, t.transaction_type, t.quantity, t.unit_cost, t.total_cost, t.reference || "", t.notes || ""])];
+    const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = `inventory-transactions-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+  };
   const [form, setForm] = useState({ inventory_id: "", transaction_type: "purchase", quantity: "", unit_cost: "", reference: "", notes: "" });
 
   const handleSubmit = () => {
@@ -128,23 +147,53 @@ export default function InventoryCostsPage() {
         {/* Recent Transactions */}
         <Card className="glass-card overflow-hidden">
           <CardHeader className="pb-3 border-b border-border/30">
-            <CardTitle className="text-base">Recent Transactions</CardTitle>
-            <CardDescription>Last {Math.min(transactions.length, 20)} transactions</CardDescription>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle className="text-base">Transactions</CardTitle>
+                <CardDescription>{filteredTx.length} shown · purchases {formatCurrency(filteredSpend)}</CardDescription>
+              </div>
+              <Button size="sm" variant="outline" onClick={exportTx} disabled={!filteredTx.length}><Download className="mr-1 h-4 w-4" /> Export</Button>
+            </div>
+            <div className="flex flex-wrap gap-2 pt-2">
+              <Input className="h-8 flex-1 min-w-[140px]" placeholder="Search…" value={txSearch} onChange={(e) => setTxSearch(e.target.value)} />
+              <Select value={typeFilter} onValueChange={setTypeFilter}>
+                <SelectTrigger className="h-8 w-[120px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All types</SelectItem>
+                  <SelectItem value="purchase">Purchase</SelectItem>
+                  <SelectItem value="usage">Usage</SelectItem>
+                  <SelectItem value="adjustment">Adjustment</SelectItem>
+                  <SelectItem value="return">Return</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={range} onValueChange={setRange}>
+                <SelectTrigger className="h-8 w-[120px]"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All time</SelectItem>
+                  <SelectItem value="7">Last 7 days</SelectItem>
+                  <SelectItem value="30">Last 30 days</SelectItem>
+                  <SelectItem value="90">Last 90 days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </CardHeader>
           <CardContent className="p-0">
-            {transactions.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-12">No transactions yet.</p>
+            {filteredTx.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-12">{transactions.length ? "No transactions match these filters." : "No transactions yet."}</p>
             ) : (
               <div className="divide-y divide-border/30 max-h-[400px] overflow-y-auto">
-                {transactions.slice(0, 20).map((tx) => (
+                {filteredTx.map((tx) => (
                   <div key={tx.id} className="px-4 py-3 flex items-center justify-between hover:bg-accent/20 transition-colors">
                     <div>
                       <p className="text-sm font-medium">{tx.item_name}</p>
-                      <p className="text-xs text-muted-foreground">{tx.quantity} × {formatCurrency(tx.unit_cost)} · {tx.created_at.split("T")[0]}</p>
+                      <p className="text-xs text-muted-foreground">{tx.quantity} × {formatCurrency(tx.unit_cost)} · {tx.created_at.split("T")[0]}{tx.reference ? ` · ${tx.reference}` : ""}</p>
                     </div>
                     <div className="text-right flex items-center gap-2">
                       <span className="text-sm font-semibold">{formatCurrency(tx.total_cost)}</span>
                       <Badge className={`text-[10px] ${txTypeStyles[tx.transaction_type] || ""}`}>{tx.transaction_type}</Badge>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" aria-label="Remove transaction" onClick={() => { if (confirm("Remove this transaction record? Stock levels will not change.")) deleteTx.mutate(tx.id); }}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
                     </div>
                   </div>
                 ))}
@@ -161,7 +210,7 @@ export default function InventoryCostsPage() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label className="text-xs">Item *</Label>
-              <Select value={form.inventory_id} onValueChange={(v) => setForm((f) => ({ ...f, inventory_id: v }))}>
+              <Select value={form.inventory_id} onValueChange={(v) => { const it = inventory.find((i) => i.id === v); setForm((f) => ({ ...f, inventory_id: v, unit_cost: f.unit_cost || (it?.unit_cost != null ? String(it.unit_cost) : "") })); }}>
                 <SelectTrigger><SelectValue placeholder="Select item" /></SelectTrigger>
                 <SelectContent>
                   {inventory.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}

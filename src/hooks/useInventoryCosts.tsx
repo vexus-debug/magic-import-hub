@@ -75,7 +75,7 @@ export function useCreateInventoryTransaction() {
           unit_cost: input.unit_cost,
           last_restocked: new Date().toISOString().split("T")[0],
         }).eq("id", input.inventory_id);
-      } else if (input.transaction_type === "usage") {
+      } else if (input.transaction_type === "usage" || input.transaction_type === "adjustment") {
         const { data: item } = await (supabase as any).from("inventory").select("quantity").eq("id", input.inventory_id).single();
         const newQty = Math.max(0, (item?.quantity || 0) - input.quantity);
         await (supabase as any).from("inventory").update({ quantity: newQty }).eq("id", input.inventory_id);
@@ -86,6 +86,22 @@ export function useCreateInventoryTransaction() {
       qc.invalidateQueries({ queryKey: ["inventory"] });
       qc.invalidateQueries({ queryKey: ["inventory-cost-analytics"] });
       toast({ title: "Transaction recorded" });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+}
+
+export function useDeleteInventoryTransaction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await (supabase as any).from("inventory_transactions").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["inventory-transactions"] });
+      qc.invalidateQueries({ queryKey: ["inventory-cost-analytics"] });
+      toast({ title: "Transaction removed" });
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
